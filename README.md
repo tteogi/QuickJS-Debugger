@@ -2,6 +2,8 @@
 
 基于 Chrome DevTools Protocol (CDP) 的 QuickJS 脚本调试器，支持在 VS Code 中对自定义 QuickJS 引擎进行断点调试。
 
+![Debug in VSCode](doc/images/debugInVSCode.png)
+
 ## 项目结构
 
 ```
