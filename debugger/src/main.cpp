@@ -10,6 +10,7 @@
 #include <sstream>
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 #ifdef _WIN32
 #include <direct.h>
