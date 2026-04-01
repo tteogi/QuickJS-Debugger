@@ -53,12 +53,13 @@ jsTest/
   │  - Stepping     │  step over / into / out / continue
   │  - Pause/Resume │  pause / resume
   │  - Call Stack   │  capture call frames + scope variables
-  │  - op_handler   │  per-JS-instruction callback (check breakpoint/step)
+  │  - debug_break  │  OP_debug callback (check breakpoint/step)
   └────────┬────────┘
            │
   ┌────────▼────────┐
-  │  QuickJS Engine │  Execute JS scripts, trigger debug API callbacks
-  │  - JS_SetOPChangedHandler()       callback on every opcode
+  │  QuickJS Engine │  Execute JS scripts, trigger debug callbacks
+  │  - JS_NewDebugContext()           create debug-enabled context
+  │  - OP_debug opcode                fires callback at statement boundaries
   │  - JS_GetStackDepth()             get call stack depth
   │  - JS_GetLocalVariablesAtLevel()  get locals at a given frame level
   │  - JS_FreeLocalVariables()        free variable array
@@ -72,7 +73,7 @@ jsTest/
 3. VS Code sends CDP commands such as `Debugger.enable` and `Debugger.setBreakpointByUrl`
 4. `CDPHandler` parses messages and calls `DebugSession` to set breakpoints
 5. `Runtime.runIfWaitingForDebugger` unblocks execution, script starts running
-6. QuickJS triggers `op_handler` on every opcode → checks breakpoint/step conditions
+6. QuickJS hits `OP_debug` opcodes at statement boundaries → invokes the debug break callback → checks breakpoint/step conditions
 7. When a breakpoint is hit, `do_pause()` captures the call stack and variables, sends a `Debugger.paused` event, and blocks
 8. VS Code receives the paused event and displays the breakpoint location and variables; user actions (continue/step) send corresponding CDP commands
 9. `DebugSession` receives the command and unblocks, script resumes execution
@@ -118,7 +119,7 @@ make -j$(nproc)
 ### Key Build Notes
 
 - **MSVC < 17.5**: Automatically injects the `compat/msvc/stdatomic.h` shim to resolve the missing C11 `<stdatomic.h>`.
-- **`QJS_ENABLE_DEBUGGER`**: The top-level `CMakeLists.txt` enables this option, which gates all debug hooks at compile time. It also automatically disables `DIRECT_DISPATCH` in the QuickJS interpreter, ensuring `JS_SetOPChangedHandler` fires on every instruction. When building QuickJS standalone without this flag, no debugging overhead is incurred.
+- **No compile-time flags required**: The debug interface uses a dedicated `OP_debug` opcode that is only emitted when a debug context is created via `JS_NewDebugContext()`. Regular contexts created with `JS_NewContext()` produce no debug opcodes and incur zero overhead. `DIRECT_DISPATCH` (computed goto) remains fully enabled.
 
 ## Usage
 
@@ -206,14 +207,18 @@ In addition to VS Code, you can also debug with Chrome:
 
 Extended QuickJS APIs this project depends on (declared in `quickjs.h`):
 
-All debug APIs are gated by the `QJS_ENABLE_DEBUGGER` compile-time macro.
+All debug APIs are always available — no compile-time flags required.
 
 ```c
-// Callback on every opcode execution (return 0 to continue, non-zero to raise exception)
-typedef int JSOPChangedHandler(JSContext *ctx, uint8_t op,
-    const char *filename, const char *funcname,
-    int line, int col, void *opaque);
-void JS_SetOPChangedHandler(JSContext *ctx, JSOPChangedHandler *cb, void *opaque);
+// Debug break callback — invoked at statement boundaries when the interpreter
+// hits an OP_debug opcode. Return 0 to continue, non-zero to raise exception.
+typedef int JSDebugBreakFunc(JSContext *ctx,
+                             const char *filename, const char *funcname,
+                             int line, int col);
+
+// Create a debug-enabled context. Bytecode compiled in this context will
+// contain OP_debug opcodes at statement boundaries. When hit, |cb| is called.
+JSContext *JS_NewDebugContext(JSRuntime *rt, JSDebugBreakFunc *cb);
 
 // Get current call stack depth
 int JS_GetStackDepth(JSContext *ctx);
@@ -227,6 +232,6 @@ void JS_FreeLocalVariables(JSContext *ctx, JSDebugLocalVar *vars, int count);
 
 ## Notes
 
-- The `quickjs/` directory contains a modified fork of [quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs) with the debug interface additions ([PR #1421](https://github.com/quickjs-ng/quickjs/pull/1421)). All debug code is gated by `QJS_ENABLE_DEBUGGER` so there is zero overhead when the flag is not set.
+- The `quickjs/` directory contains a modified fork of [quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs) with the debug interface additions ([PR #1421](https://github.com/quickjs-ng/quickjs/pull/1421)). Debug instrumentation (`OP_debug` opcodes) is only emitted when using `JS_NewDebugContext()`; regular contexts have zero overhead.
 - On Windows, file paths are case-insensitive; the debugger handles normalization internally.
 - In `--inspect-brk` mode, the program blocks until a debugger connects and sends `runIfWaitingForDebugger`.

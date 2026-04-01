@@ -53,15 +53,16 @@ jsTest/
   │  ─ 单步控制      │  step over / into / out / continue
   │  ─ 暂停/恢复     │  pause / resume
   │  ─ 调用栈捕获    │  capture call frames + scope variables
-  │  ─ op_handler   │  每条 JS 指令回调（检查断点/单步）
+  │  ─ debug_break   │  OP_debug 回调（检查断点/单步）
   └────────┬────────┘
            │
   ┌────────▼────────┐
-  │   QuickJS 引擎   │  执行 JS 脚本，通过调试 API 回调
-  │  ─ JS_SetOPChangedHandler()    每条 opcode 触发回调
-  │  ─ JS_GetStackDepth()          获取调用栈深度
-  │  ─ JS_GetLocalVariablesAtLevel()  获取指定层级局部变量
-  │  ─ JS_FreeLocalVariables()     释放变量数组
+  │   QuickJS 引擎   │  执行 JS 脚本，通过调试回调触发
+  │  ─ JS_NewDebugContext()          创建调试上下文
+  │  ─ OP_debug opcode               语句边界触发回调
+  │  ─ JS_GetStackDepth()            获取调用栈深度
+  │  ─ JS_GetLocalVariablesAtLevel() 获取指定层级局部变量
+  │  ─ JS_FreeLocalVariables()       释放变量数组
   └─────────────────┘
 ```
 
@@ -72,7 +73,7 @@ jsTest/
 3. VS Code 发送 `Debugger.enable`、`Debugger.setBreakpointByUrl` 等 CDP 命令
 4. `CDPHandler` 解析消息并调用 `DebugSession` 设置断点
 5. `Runtime.runIfWaitingForDebugger` 解除阻塞，开始执行脚本
-6. QuickJS 每执行一条 opcode 触发 `op_handler` → 检查断点/单步条件
+6. QuickJS 在语句边界触发 `OP_debug` 操作码 → 调用调试回调 → 检查断点/单步条件
 7. 命中断点时 `do_pause()` 捕获调用栈和变量，发送 `Debugger.paused` 事件，阻塞等待
 8. VS Code 收到暂停事件后显示断点位置和变量；用户操作 continue/step 发送对应 CDP 命令
 9. `DebugSession` 收到命令后解除阻塞，脚本继续执行
@@ -120,7 +121,7 @@ make -j$(nproc)
 ### 关键构建选项说明
 
 - **MSVC < 17.5**：自动注入 `compat/msvc/stdatomic.h` 垫片解决缺失 C11 `<stdatomic.h>` 的问题
-- **`QJS_ENABLE_DEBUGGER`**：顶层 `CMakeLists.txt` 启用该选项，所有调试钩子都通过此编译时宏控制。启用后会自动禁用 QuickJS 解释器的 `DIRECT_DISPATCH`，确保 `JS_SetOPChangedHandler` 回调在每条指令上触发。单独编译 QuickJS 不开启此选项时，不引入任何调试开销。
+- **无需编译时宏**：调试接口使用专用的 `OP_debug` 操作码，仅在通过 `JS_NewDebugContext()` 创建调试上下文时才会发射。使用普通 `JS_NewContext()` 创建的上下文不会产生调试操作码，零开销。`DIRECT_DISPATCH`（computed goto）保持完全启用。
 
 ## 运行
 
@@ -208,14 +209,18 @@ Waiting for debugger to connect...
 
 本项目依赖的 QuickJS 扩展 API（在 `quickjs.h` 中声明）：
 
-所有调试 API 均由编译时宏 `QJS_ENABLE_DEBUGGER` 控制。
+所有调试 API 始终可用，无需编译时宏控制。
 
 ```c
-// 每条 opcode 执行时的回调（返回 0 继续执行，非零则抛出异常）
-typedef int JSOPChangedHandler(JSContext *ctx, uint8_t op,
-    const char *filename, const char *funcname,
-    int line, int col, void *opaque);
-void JS_SetOPChangedHandler(JSContext *ctx, JSOPChangedHandler *cb, void *opaque);
+// 调试断点回调 — 当解释器执行到 OP_debug 操作码时在语句边界触发。
+// 返回 0 继续执行，非零则抛出异常。
+typedef int JSDebugBreakFunc(JSContext *ctx,
+                             const char *filename, const char *funcname,
+                             int line, int col);
+
+// 创建调试上下文。在此上下文中编译的字节码会在语句边界包含 OP_debug 操作码。
+// 执行到 OP_debug 时会调用 |cb|。传入 NULL 则禁用调试。
+JSContext *JS_NewDebugContext(JSRuntime *rt, JSDebugBreakFunc *cb);
 
 // 获取当前调用栈深度
 int JS_GetStackDepth(JSContext *ctx);
@@ -229,6 +234,6 @@ void JS_FreeLocalVariables(JSContext *ctx, JSDebugLocalVar *vars, int count);
 
 ## 注意事项
 
-- `quickjs/` 目录包含 [quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs) 的修改版本，增加了调试接口（[PR #1421](https://github.com/quickjs-ng/quickjs/pull/1421)）。所有调试代码由 `QJS_ENABLE_DEBUGGER` 宏控制，不开启时零开销。
+- `quickjs/` 目录包含 [quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs) 的修改版本，增加了调试接口（[PR #1421](https://github.com/quickjs-ng/quickjs/pull/1421)）。调试插桩（`OP_debug` 操作码）仅在使用 `JS_NewDebugContext()` 时才会发射，普通上下文零开销。
 - Windows 上路径大小写不敏感，调试器内部已做统一处理
 - `--inspect-brk` 模式下程序会阻塞直到调试器连接并发送 `runIfWaitingForDebugger`
