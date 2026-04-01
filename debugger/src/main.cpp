@@ -198,13 +198,20 @@ int main(int argc, char* argv[]) {
         inspect_brk = true;
     }
 
-    // Create QuickJS runtime and context
+    // Create QuickJS runtime and context (with debug support)
     JSRuntime* rt = JS_NewRuntime();
     if (!rt) {
         fprintf(stderr, "Error: Cannot create QuickJS runtime\n");
         return 1;
     }
-    JSContext* ctx = JS_NewContext(rt);
+
+    // Create debug session (before context, so callback is available)
+    DebugSession session;
+    g_session = &session;
+
+    JSContext* ctx = JS_NewDebugContext(rt,
+        DebugSession::debug_break_handler);
+    JS_SetContextOpaque(ctx, &session);
     if (!ctx) {
         fprintf(stderr, "Error: Cannot create QuickJS context\n");
         JS_FreeRuntime(rt);
@@ -213,10 +220,6 @@ int main(int argc, char* argv[]) {
 
     // Setup console
     setup_console(ctx);
-
-    // Create debug session
-    DebugSession session;
-    g_session = &session;
 
     // Add the script
     std::string script_id = session.add_script(script_file, source);
@@ -305,9 +308,6 @@ int main(int argc, char* argv[]) {
     if (inspect_brk) {
         session.wait_for_debugger();
     }
-
-    // Register the bytecode trace handler for debugging
-    JS_SetBytecodeTraceHandler(ctx, DebugSession::bytecode_trace_handler, &session);
 
     // Evaluate the script
     fprintf(stderr, "[Engine] Executing %s ...\n", script_file.c_str());
