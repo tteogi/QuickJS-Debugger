@@ -53,12 +53,12 @@ jsTest/
   │  ─ 单步控制      │  step over / into / out / continue
   │  ─ 暂停/恢复     │  pause / resume
   │  ─ 调用栈捕获    │  capture call frames + scope variables
-  │  ─ debug_break   │  OP_debug 回调（检查断点/单步）
+  │  ─ debug_trace   │  OP_debug 回调（检查断点/单步）
   └────────┬────────┘
            │
   ┌────────▼────────┐
   │   QuickJS 引擎   │  执行 JS 脚本，通过调试回调触发
-  │  ─ JS_SetDebugBreakHandler()     设置/清除调试断点回调
+  │  ─ JS_SetDebugTraceHandler()     设置/清除调试跟踪回调
   │  ─ OP_debug opcode               语句边界触发回调
   │  ─ JS_GetStackDepth()            获取调用栈深度
   │  ─ JS_GetLocalVariablesAtLevel() 获取指定层级局部变量
@@ -121,7 +121,7 @@ make -j$(nproc)
 ### 关键构建选项说明
 
 - **MSVC < 17.5**：自动注入 `compat/msvc/stdatomic.h` 垫片解决缺失 C11 `<stdatomic.h>` 的问题
-- **无需编译时宏**：调试接口使用专用的 `OP_debug` 操作码，始终在语句边界发射。未设置处理程序时运行时开销几乎为零（仅一次 `unlikely` 分支判断）。可随时通过 `JS_SetDebugBreakHandler()` 挂载处理程序。`DIRECT_DISPATCH`（computed goto）保持完全启用。
+- **无需编译时宏**：调试接口使用专用的 `OP_debug` 操作码，始终在语句边界发射。未设置处理程序时运行时开销几乎为零（仅一次 `unlikely` 分支判断）。可随时通过 `JS_SetDebugTraceHandler()` 挂载处理程序。`DIRECT_DISPATCH`（computed goto）保持完全启用。
 
 ## 运行
 
@@ -212,15 +212,15 @@ Waiting for debugger to connect...
 所有调试 API 始终可用，无需编译时宏控制。
 
 ```c
-// 调试断点回调 — 当解释器执行到 OP_debug 操作码时在语句边界触发。
+// 调试跟踪回调 — 当解释器执行到 OP_debug 操作码时在语句边界触发。
 // 返回 0 继续执行，非零则抛出异常。
-typedef int JSDebugBreakFunc(JSContext *ctx,
+typedef int JSDebugTraceFunc(JSContext *ctx,
                              const char *filename, const char *funcname,
                              int line, int col);
 
-// 设置（或清除）调试断点处理程序。当解释器执行到 OP_debug 操作码且已设置处理程序时，
+// 设置（或清除）调试跟踪处理程序。当解释器执行到 OP_debug 操作码且已设置处理程序时，
 // 将调用该处理程序。传入 NULL 则禁用。适用于任何上下文（JS_NewContext、JS_NewContextRaw 等）。
-void JS_SetDebugBreakHandler(JSContext *ctx, JSDebugBreakFunc *cb);
+void JS_SetDebugTraceHandler(JSContext *ctx, JSDebugTraceFunc *cb);
 
 // 获取当前调用栈深度
 int JS_GetStackDepth(JSContext *ctx);

@@ -53,12 +53,12 @@ jsTest/
   │  - Stepping     │  step over / into / out / continue
   │  - Pause/Resume │  pause / resume
   │  - Call Stack   │  capture call frames + scope variables
-  │  - debug_break  │  OP_debug callback (check breakpoint/step)
+  │  - debug_trace  │  OP_debug callback (check breakpoint/step)
   └────────┬────────┘
            │
   ┌────────▼────────┐
   │  QuickJS Engine │  Execute JS scripts, trigger debug callbacks
-  │  - JS_SetDebugBreakHandler()      set/clear debug break callback
+  │  - JS_SetDebugTraceHandler()      set/clear debug trace callback
   │  - OP_debug opcode                fires callback at statement boundaries
   │  - JS_GetStackDepth()             get call stack depth
   │  - JS_GetLocalVariablesAtLevel()  get locals at a given frame level
@@ -119,7 +119,7 @@ make -j$(nproc)
 ### Key Build Notes
 
 - **MSVC < 17.5**: Automatically injects the `compat/msvc/stdatomic.h` shim to resolve the missing C11 `<stdatomic.h>`.
-- **No compile-time flags required**: The debug interface uses a dedicated `OP_debug` opcode that is always emitted at statement boundaries. The runtime cost is virtually zero when no handler is set (a single `unlikely` branch). Attach a handler at any time via `JS_SetDebugBreakHandler()`. `DIRECT_DISPATCH` (computed goto) remains fully enabled.
+- **No compile-time flags required**: The debug interface uses a dedicated `OP_debug` opcode that is always emitted at statement boundaries. The runtime cost is virtually zero when no handler is set (a single `unlikely` branch). Attach a handler at any time via `JS_SetDebugTraceHandler()`. `DIRECT_DISPATCH` (computed goto) remains fully enabled.
 
 ## Usage
 
@@ -210,16 +210,16 @@ Extended QuickJS APIs this project depends on (declared in `quickjs.h`):
 All debug APIs are always available — no compile-time flags required.
 
 ```c
-// Debug break callback — invoked at statement boundaries when the interpreter
+// Debug trace callback — invoked at statement boundaries when the interpreter
 // hits an OP_debug opcode. Return 0 to continue, non-zero to raise exception.
-typedef int JSDebugBreakFunc(JSContext *ctx,
+typedef int JSDebugTraceFunc(JSContext *ctx,
                              const char *filename, const char *funcname,
                              int line, int col);
 
-// Set (or clear) the debug break handler. When the interpreter hits an
+// Set (or clear) the debug trace handler. When the interpreter hits an
 // OP_debug opcode and a handler is set, it is called. Pass NULL to disable.
 // Works with any context (JS_NewContext, JS_NewContextRaw, etc.).
-void JS_SetDebugBreakHandler(JSContext *ctx, JSDebugBreakFunc *cb);
+void JS_SetDebugTraceHandler(JSContext *ctx, JSDebugTraceFunc *cb);
 
 // Get current call stack depth
 int JS_GetStackDepth(JSContext *ctx);

@@ -775,10 +775,10 @@ json::Value DebugSession::evaluate_on_call_frame(const std::string& call_frame_i
 }
 
 // ============================================================
-// Debug Break Handler (OP_debug callback)
+// Debug Trace Handler (OP_debug callback)
 // ============================================================
 //
-int DebugSession::debug_break_handler(JSContext *ctx,
+int DebugSession::debug_trace_handler(JSContext *ctx,
                                const char *filename, const char *funcname,
                                int line, int col) {
 

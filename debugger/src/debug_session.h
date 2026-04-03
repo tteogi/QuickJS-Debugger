@@ -85,8 +85,8 @@ public:
     json::Value evaluate_on_call_frame(const std::string& call_frame_id,
                                        const std::string& expression);
 
-    // --- QuickJS debug break handler (OP_debug callback) ---
-    static int debug_break_handler(JSContext *ctx,
+    // --- QuickJS debug trace handler (OP_debug callback) ---
+    static int debug_trace_handler(JSContext *ctx,
                           const char *filename, const char *funcname,
                           int line, int col);
 
