@@ -775,7 +775,7 @@ json::Value DebugSession::evaluate_on_call_frame(const std::string& call_frame_i
 }
 
 // ============================================================
-// Debug Trace Handler (OP_debug callback)
+// Debug Trace Handler
 // ============================================================
 //
 int DebugSession::debug_trace_handler(JSContext *ctx,
@@ -785,11 +785,6 @@ int DebugSession::debug_trace_handler(JSContext *ctx,
     auto* self = static_cast<DebugSession*>(JS_GetContextOpaque(ctx));
     if (!self->enabled_.load()) return 0;
     if (!filename || line <= 0) return 0;
-
-    // 只有当行号变化时才更新调用栈信息，这样可以避免在同一行内多次调用时重复更新调用栈，提高性能
-    if (!self->frame_stack_.empty() && self->frame_stack_.back().line == line) {
-        return 0;
-    }
 
     int depth = JS_GetStackDepth(ctx);
 
