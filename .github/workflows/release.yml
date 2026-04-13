@@ -9,17 +9,13 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    uses: ./.github/workflows/build.yml
-    permissions:
-      contents: read
-
-  package-and-release:
-    needs: build
+  build-linux:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        submodules: recursive
 
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y cmake build-essential
@@ -100,29 +96,11 @@ jobs:
       with:
         path: artifacts
 
-    - name: Package Linux
-      run: |
-        cd artifacts/qjs_debug-linux
-        cp ../../test.js .
-        tar czf ../qjs_debug-linux-x86_64.tar.gz qjs_debug test.js
-
-    - name: Package Windows
-      run: |
-        cd artifacts/qjs_debug-windows
-        cp ../../test.js .
-        zip ../qjs_debug-windows-x86_64.zip qjs_debug.exe test.js
-
-    - name: Package macOS
-      run: |
-        cd artifacts/qjs_debug-macos
-        cp ../../test.js .
-        tar czf ../qjs_debug-macos-arm64.tar.gz qjs_debug test.js
-
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         generate_release_notes: true
         files: |
-          artifacts/qjs_debug-linux-x86_64.tar.gz
-          artifacts/qjs_debug-windows-x86_64.zip
-          artifacts/qjs_debug-macos-arm64.tar.gz
+          artifacts/qjs_debug-linux-x86_64/qjs_debug-linux-x86_64.tar.gz
+          artifacts/qjs_debug-windows-x86_64/qjs_debug-windows-x86_64.zip
+          artifacts/qjs_debug-macos-arm64/qjs_debug-macos-arm64.tar.gz
