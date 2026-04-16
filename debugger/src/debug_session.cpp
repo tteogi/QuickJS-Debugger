@@ -786,7 +786,7 @@ int DebugSession::debug_trace_handler(JSContext *ctx,
     if (!self->enabled_.load()) return 0;
     if (!filename || line <= 0) return 0;
 
-    // printf("---->[DBG] Trace: %s:%d in %s\n", filename, line, funcname ? funcname : "(anonymous)");
+    printf("---->[DBG] Trace: %s:%d in %s\n", filename, line, funcname ? funcname : "(anonymous)");
 
     int depth = JS_GetStackDepth(ctx);
 

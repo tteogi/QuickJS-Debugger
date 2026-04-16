@@ -1,8 +1,6 @@
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(QJS_ENABLE_DEBUGGER ON)
-
 add_executable(qjs_debug
     src/main.cpp
     src/websocket_server.cpp

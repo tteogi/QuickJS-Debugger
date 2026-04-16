@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Regenerate gen/ and builtin-*.h files using a qjsc built WITHOUT QJS_ENABLE_DEBUGGER,
+    Regenerate gen/ and builtin-*.h files using a clean qjsc build,
     so the output matches upstream quickjs-ng/quickjs.
 #>
 param(
@@ -16,9 +16,9 @@ $BuildDir = "build_codegen"
 $QJSC = Join-Path $BuildDir "qjsc.exe"
 
 try {
-    # 1. Configure with QJS_ENABLE_DEBUGGER=OFF
-    Write-Host ">> Configuring ($BuildType, QJS_ENABLE_DEBUGGER=OFF) ..." -ForegroundColor Cyan
-    $cmakeArgs = @("-B", $BuildDir, "-DCMAKE_BUILD_TYPE=$BuildType", "-DQJS_ENABLE_DEBUGGER=OFF")
+    # 1. Configure
+    Write-Host ">> Configuring ($BuildType) ..." -ForegroundColor Cyan
+    $cmakeArgs = @("-B", $BuildDir, "-DCMAKE_BUILD_TYPE=$BuildType")
     # Older MSVC (< 17.5) lacks C11 <stdatomic.h>; use the compat shim from the root project
     $CompatDir = Join-Path $ScriptDir "compat\msvc"
     if (Test-Path $CompatDir) {
