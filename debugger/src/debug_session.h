@@ -34,6 +34,7 @@ struct Breakpoint {
     int column = 0;
     bool enabled = true;
     bool is_regex = false;  // true if url is a regex pattern (from urlRegex)
+    std::string condition;  // optional CDP-supplied conditional expression; empty = unconditional
 };
 
 enum class PauseReason {
@@ -60,7 +61,8 @@ public:
     // --- Breakpoint management (thread-safe) ---
     // Returns CDP-format result with breakpointId and locations
     json::Value set_breakpoint_by_url(const std::string& url, int line_0based, int column_0based,
-                                       bool is_regex = false);
+                                       bool is_regex = false,
+                                       const std::string& condition = "");
     bool remove_breakpoint(const std::string& bp_id);
     void set_breakpoints_active(bool active);
 
@@ -90,6 +92,13 @@ public:
                           const char *filename, const char *funcname,
                           int line, int col);
 
+    // --- Context <-> session binding (allows multiple embedders to share
+    //     the OP_debug callback without colliding on JS_SetContextOpaque,
+    //     which OneJS already uses for its own wrapper struct) ---
+    static void register_for_context(JSContext* ctx, DebugSession* session);
+    static void unregister_context(JSContext* ctx);
+    static DebugSession* find_for_context(JSContext* ctx);
+
     // --- Wait for debugger ---
     void set_pause_on_start(bool v) { pause_on_start_ = v; }
     void wait_for_debugger();
@@ -102,6 +111,9 @@ public:
 
 private:
     bool check_breakpoint(const std::string& filename, int line) const;
+    // Evaluate a breakpoint condition in the current JS context. Returns true
+    // if the expression evaluates truthy; false if falsy, empty, or throws.
+    static bool evaluate_condition(JSContext* ctx, const std::string& expr);
     void do_pause(JSContext* ctx, const char* filename, const char* funcname,
                   int line, int col, PauseReason reason, int bp_id);
     void capture_frames(JSContext* ctx, const char* filename, const char* funcname,

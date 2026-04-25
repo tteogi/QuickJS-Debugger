@@ -163,9 +163,12 @@ json::Value CDPHandler::on_debugger_set_breakpoint_by_url(const json::Value& par
             url = url.substr(7);
         }
     }
-    fprintf(stderr, "[CDP] setBreakpointByUrl: %s='%s' line=%d\n",
-            is_regex ? "regex" : "url", url.c_str(), line);
-    return session_.set_breakpoint_by_url(url, line, col, is_regex);
+    std::string condition = params.has("condition") ? params["condition"].get_string() : "";
+    fprintf(stderr, "[CDP] setBreakpointByUrl: %s='%s' line=%d%s%s\n",
+            is_regex ? "regex" : "url", url.c_str(), line,
+            condition.empty() ? "" : " cond=",
+            condition.empty() ? "" : condition.c_str());
+    return session_.set_breakpoint_by_url(url, line, col, is_regex, condition);
 }
 
 json::Value CDPHandler::on_debugger_remove_breakpoint(const json::Value& params) {

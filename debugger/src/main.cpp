@@ -216,7 +216,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     JS_SetDebugTraceHandler(ctx, DebugSession::debug_trace_handler);
-    JS_SetContextOpaque(ctx, &session);
+    DebugSession::register_for_context(ctx, &session);
 
     // Setup console
     setup_console(ctx);

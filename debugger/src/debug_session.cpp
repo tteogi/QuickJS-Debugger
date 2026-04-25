@@ -6,6 +6,31 @@
 #include <chrono>
 #include <thread>
 #include <regex>
+#include <unordered_map>
+
+// ============================================================
+// Context registry (ctx -> session) — see header for rationale.
+// ============================================================
+namespace {
+    std::mutex g_ctx_session_mutex;
+    std::unordered_map<JSContext*, DebugSession*> g_ctx_session_map;
+}
+
+void DebugSession::register_for_context(JSContext* ctx, DebugSession* session) {
+    std::lock_guard<std::mutex> lock(g_ctx_session_mutex);
+    g_ctx_session_map[ctx] = session;
+}
+
+void DebugSession::unregister_context(JSContext* ctx) {
+    std::lock_guard<std::mutex> lock(g_ctx_session_mutex);
+    g_ctx_session_map.erase(ctx);
+}
+
+DebugSession* DebugSession::find_for_context(JSContext* ctx) {
+    std::lock_guard<std::mutex> lock(g_ctx_session_mutex);
+    auto it = g_ctx_session_map.find(ctx);
+    return it == g_ctx_session_map.end() ? nullptr : it->second;
+}
 
 // ============================================================
 // URL / path helpers
@@ -127,7 +152,8 @@ std::string DebugSession::find_script_id(const std::string& filename) const {
 
 json::Value DebugSession::set_breakpoint_by_url(const std::string& url,
                                                   int line_0based, int column_0based,
-                                                  bool is_regex) {
+                                                  bool is_regex,
+                                                  const std::string& condition) {
     std::lock_guard<std::mutex> lock(bp_mutex_);
 
     Breakpoint bp;
@@ -137,11 +163,14 @@ json::Value DebugSession::set_breakpoint_by_url(const std::string& url,
     bp.column = column_0based;
     bp.enabled = true;
     bp.is_regex = is_regex;
+    bp.condition = condition;
 
     breakpoints_[bp.id] = bp;
 
-    fprintf(stderr, "[DBG] Set breakpoint #%d: url='%s' line=%d (1-based)\n",
-            bp.id, bp.url.c_str(), bp.line);
+    fprintf(stderr, "[DBG] Set breakpoint #%d: url='%s' line=%d (1-based)%s%s\n",
+            bp.id, bp.url.c_str(), bp.line,
+            condition.empty() ? "" : " cond=",
+            condition.empty() ? "" : condition.c_str());
 
     // Build CDP result
     std::string bp_id_str = std::to_string(bp.id) + ":" + std::to_string(line_0based) + ":0";
@@ -775,6 +804,62 @@ json::Value DebugSession::evaluate_on_call_frame(const std::string& call_frame_i
 }
 
 // ============================================================
+// Conditional breakpoint evaluation
+// ============================================================
+//
+// Best-effort evaluation of a CDP-supplied condition expression at the
+// breakpoint location. Strategy:
+//   1. Snapshot the current frame's locals/arguments via
+//      JS_GetLocalVariablesAtLevel(ctx, 0).
+//   2. Build a temporary global object holding those bindings and wrap the
+//      user's expression with `with(__bp_locals__) { ... }` so identifiers
+//      in the condition resolve against frame-locals first, then globals.
+//   3. JS_Eval the wrapped script. Truthy => break; falsy or throw => skip.
+//   4. Always tear down the temporary global, swallow any exception, and
+//      restore a clean exception state so the host script is not perturbed.
+bool DebugSession::evaluate_condition(JSContext* ctx, const std::string& expr) {
+    if (expr.empty()) return true;
+
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSAtom locals_atom = JS_NewAtom(ctx, "__bp_locals__");
+    JSValue locals_obj = JS_NewObject(ctx);
+
+    int var_count = 0;
+    JSDebugLocalVar* vars = JS_GetLocalVariablesAtLevel(ctx, 0, &var_count);
+    if (vars) {
+        for (int i = 0; i < var_count; i++) {
+            if (!vars[i].name) continue;
+            // Dup the value because the locals array owns its references and
+            // will be freed below.
+            JS_SetPropertyStr(ctx, locals_obj, vars[i].name,
+                              JS_DupValue(ctx, vars[i].value));
+        }
+        JS_FreeLocalVariables(ctx, vars, var_count);
+    }
+    JS_SetProperty(ctx, global, locals_atom, locals_obj); // takes ownership
+
+    std::string wrapped = "with(this.__bp_locals__){(" + expr + ")}";
+    JSValue eval_val = JS_Eval(ctx, wrapped.c_str(), wrapped.size(),
+                               "<bp-condition>", JS_EVAL_TYPE_GLOBAL);
+
+    bool truthy = false;
+    if (JS_IsException(eval_val)) {
+        // Swallow — a throwing condition shouldn't break or leak to the host.
+        JSValue exc = JS_GetException(ctx);
+        JS_FreeValue(ctx, exc);
+    } else {
+        truthy = JS_ToBool(ctx, eval_val) > 0;
+    }
+    JS_FreeValue(ctx, eval_val);
+
+    JS_DeleteProperty(ctx, global, locals_atom, 0);
+    JS_FreeAtom(ctx, locals_atom);
+    JS_FreeValue(ctx, global);
+
+    return truthy;
+}
+
+// ============================================================
 // Debug Trace Handler
 // ============================================================
 //
@@ -782,7 +867,8 @@ int DebugSession::debug_trace_handler(JSContext *ctx,
                                const char *filename, const char *funcname,
                                int line, int col) {
 
-    auto* self = static_cast<DebugSession*>(JS_GetContextOpaque(ctx));
+    auto* self = DebugSession::find_for_context(ctx);
+    if (!self) return 0;
     if (!self->enabled_.load()) return 0;
     if (!filename || line <= 0) return 0;
 
@@ -821,8 +907,9 @@ int DebugSession::debug_trace_handler(JSContext *ctx,
 
     // Check breakpoints (in all modes)
     if (self->check_breakpoint(filename, line)) {
-        // Find which breakpoint
+        // Find which breakpoint matched and capture its condition (if any)
         int bp_id = 0;
+        std::string bp_condition;
         {
             std::lock_guard<std::mutex> lock(self->bp_mutex_);
             std::string norm = normalize_url(filename);
@@ -837,6 +924,7 @@ int DebugSession::debug_trace_handler(JSContext *ctx,
                             std::regex re(bp.url, std::regex_constants::ECMAScript | std::regex_constants::icase);
                             if (std::regex_search(furl, re) || std::regex_search(norm, re)) {
                                 bp_id = id;
+                                bp_condition = bp.condition;
                                 break;
                             }
                         } catch (...) {}
@@ -848,10 +936,16 @@ int DebugSession::debug_trace_handler(JSContext *ctx,
                         to_lower(norm).find(to_lower(bp.url)) != std::string::npos ||
                         to_lower(bp.url).find(to_lower(norm)) != std::string::npos) {
                         bp_id = id;
+                        bp_condition = bp.condition;
                         break;
                     }
                 }
             }
+        }
+        // Evaluate condition (if present). Skip the pause when the expression
+        // is falsy or throws — matches Chrome DevTools / VSCode behavior.
+        if (!bp_condition.empty() && !DebugSession::evaluate_condition(ctx, bp_condition)) {
+            return 0;
         }
         self->step_mode_.store(StepMode::None);
         self->do_pause(ctx, filename, funcname, line, col, PauseReason::Breakpoint, bp_id);
