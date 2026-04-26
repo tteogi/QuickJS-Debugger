@@ -15,8 +15,9 @@ extern "C" {
 
 struct ScriptInfo {
     std::string id;
-    std::string url;        // normalized URL (forward slashes)
+    std::string url;             // normalized URL (forward slashes)
     std::string source;
+    std::string source_map_url;  // value of `//# sourceMappingURL=` if present
     int end_line = 0;
 };
 
@@ -118,8 +119,15 @@ private:
                   int line, int col, PauseReason reason, int bp_id);
     void capture_frames(JSContext* ctx, const char* filename, const char* funcname,
                         int line, int col);
+    // `depth` controls how aggressively child properties are pre-walked into
+    // object_store_. Top-level calls (from capture_frames / eval) pass 0 so
+    // the immediate property panel has data; nested calls pass depth+1 and
+    // return a "shell" RemoteObject (type/className/objectId only) once the
+    // limit is reached. Without this cap, object graphs with cycles (React
+    // fibers etc.) stack-overflow / OOM during a Debugger.paused capture.
     json::Value js_value_to_remote_object(JSContext* ctx, JSValue val,
-                                           const std::string& group) const;
+                                           const std::string& group,
+                                           int depth = 0) const;
     std::string store_object(const std::string& group, json::Value props) const;
     std::string find_script_id(const std::string& filename) const;
 

@@ -85,11 +85,32 @@ void DebugSession::set_send_event(SendEventFn fn) {
 // Script management
 // ============================================================
 
+// Extract the `//# sourceMappingURL=...` (or legacy `//@`) magic comment from
+// the tail of a script. esbuild/webpack/etc. emit this on the last line of the
+// bundle. vscode-js-debug uses this to find the .map file — without it, no
+// source-map-aware breakpoints can bind.
+static std::string extract_source_map_url(const std::string& source) {
+    // Search the last 4KB for the comment to keep this O(1)-ish.
+    size_t start = source.size() > 4096 ? source.size() - 4096 : 0;
+    size_t pos = source.find("//# sourceMappingURL=", start);
+    if (pos == std::string::npos) {
+        pos = source.find("//@ sourceMappingURL=", start);
+    }
+    if (pos == std::string::npos) return {};
+    pos += 21; // length of "//# sourceMappingURL="
+    size_t end = source.find_first_of("\r\n", pos);
+    if (end == std::string::npos) end = source.size();
+    // Trim trailing whitespace
+    while (end > pos && std::isspace((unsigned char)source[end - 1])) end--;
+    return source.substr(pos, end - pos);
+}
+
 std::string DebugSession::add_script(const std::string& url, const std::string& source) {
     ScriptInfo info;
     info.id = std::to_string(next_script_id_++);
     info.url = normalize_url(url);
     info.source = source;
+    info.source_map_url = extract_source_map_url(source);
 
     // Count lines
     int lines = 1;
@@ -113,7 +134,7 @@ std::string DebugSession::add_script(const std::string& url, const std::string& 
         params.set("executionContextId", 1);
         params.set("hash", "");
         params.set("isLiveEdit", false);
-        params.set("sourceMapURL", "");
+        params.set("sourceMapURL", si.source_map_url);
         params.set("hasSourceURL", false);
         params.set("isModule", false);
         params.set("length", (int)si.source.size());
@@ -358,8 +379,17 @@ void DebugSession::on_disconnect() {
 // JSValue → CDP RemoteObject
 // ============================================================
 
+// Stop walking children past this depth. 1 means: top-level vars in the
+// Variables panel show their immediate fields, but those fields' fields
+// are not pre-walked. VSCode lazily fetches deeper levels when the user
+// clicks expand — but with our current store-once model that yields empty
+// children (acceptable trade-off: the common case of glancing at a value
+// works, deep drill-down doesn't, and we never crash on cyclic graphs).
+static constexpr int kMaxRemoteObjectDepth = 1;
+
 json::Value DebugSession::js_value_to_remote_object(JSContext* ctx, JSValue val,
-                                                      const std::string& group) const {
+                                                      const std::string& group,
+                                                      int depth) const {
     auto obj = json::Value::object();
 
     if (JS_IsUndefined(val)) {
@@ -408,7 +438,7 @@ json::Value DebugSession::js_value_to_remote_object(JSContext* ctx, JSValue val,
         obj.set("subtype", "array");
         obj.set("className", "Array");
 
-        // Get array length and elements
+        // Get array length
         JSValue len_val = JS_GetPropertyStr(ctx, val, "length");
         int32_t len = 0;
         JS_ToInt32(ctx, &len, len_val);
@@ -416,19 +446,23 @@ json::Value DebugSession::js_value_to_remote_object(JSContext* ctx, JSValue val,
 
         obj.set("description", std::string("Array(") + std::to_string(len) + ")");
 
-        // Store array properties
+        // Store array properties (only when within depth budget; otherwise
+        // emit a shell — VSCode shows the array as expandable but won't
+        // pre-fetch the children, which is what kills us on big React graphs).
         auto props = json::Value::array();
-        for (int32_t i = 0; i < len && i < 100; i++) {
-            JSValue elem = JS_GetPropertyUint32(ctx, val, i);
-            auto prop = json::Value::object();
-            prop.set("name", std::to_string(i));
-            prop.set("value", js_value_to_remote_object(ctx, elem, group));
-            prop.set("writable", true);
-            prop.set("configurable", true);
-            prop.set("enumerable", true);
-            prop.set("isOwn", true);
-            props.push(prop);
-            JS_FreeValue(ctx, elem);
+        if (depth < kMaxRemoteObjectDepth) {
+            for (int32_t i = 0; i < len && i < 100; i++) {
+                JSValue elem = JS_GetPropertyUint32(ctx, val, i);
+                auto prop = json::Value::object();
+                prop.set("name", std::to_string(i));
+                prop.set("value", js_value_to_remote_object(ctx, elem, group, depth + 1));
+                prop.set("writable", true);
+                prop.set("configurable", true);
+                prop.set("enumerable", true);
+                prop.set("isOwn", true);
+                props.push(prop);
+                JS_FreeValue(ctx, elem);
+            }
         }
         // Add length property
         auto len_prop = json::Value::object();
@@ -449,36 +483,38 @@ json::Value DebugSession::js_value_to_remote_object(JSContext* ctx, JSValue val,
     } else if (JS_IsObject(val)) {
         obj.set("type", "object");
         obj.set("className", "Object");
+        obj.set("description", "Object");
 
-        // Get own property names
-        JSPropertyEnum* props_enum = nullptr;
-        uint32_t prop_count = 0;
         auto props = json::Value::array();
-
-        if (JS_GetOwnPropertyNames(ctx, &props_enum, &prop_count, val,
-                JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
-            for (uint32_t i = 0; i < prop_count && i < 100; i++) {
-                JSValue pval = JS_GetProperty(ctx, val, props_enum[i].atom);
-                const char* pname = JS_AtomToCString(ctx, props_enum[i].atom);
-                if (pname) {
-                    auto prop = json::Value::object();
-                    prop.set("name", pname);
-                    prop.set("value", js_value_to_remote_object(ctx, pval, group));
-                    prop.set("writable", true);
-                    prop.set("configurable", true);
-                    prop.set("enumerable", true);
-                    prop.set("isOwn", true);
-                    props.push(prop);
-                    JS_FreeCString(ctx, pname);
+        // Same depth gate as the array branch — without it a single
+        // capture_frames on a paused React render walks the entire fiber tree.
+        if (depth < kMaxRemoteObjectDepth) {
+            JSPropertyEnum* props_enum = nullptr;
+            uint32_t prop_count = 0;
+            if (JS_GetOwnPropertyNames(ctx, &props_enum, &prop_count, val,
+                    JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+                for (uint32_t i = 0; i < prop_count && i < 100; i++) {
+                    JSValue pval = JS_GetProperty(ctx, val, props_enum[i].atom);
+                    const char* pname = JS_AtomToCString(ctx, props_enum[i].atom);
+                    if (pname) {
+                        auto prop = json::Value::object();
+                        prop.set("name", pname);
+                        prop.set("value", js_value_to_remote_object(ctx, pval, group, depth + 1));
+                        prop.set("writable", true);
+                        prop.set("configurable", true);
+                        prop.set("enumerable", true);
+                        prop.set("isOwn", true);
+                        props.push(prop);
+                        JS_FreeCString(ctx, pname);
+                    }
+                    JS_FreeValue(ctx, pval);
                 }
-                JS_FreeValue(ctx, pval);
+                for (uint32_t i = 0; i < prop_count; i++)
+                    JS_FreeAtom(ctx, props_enum[i].atom);
+                js_free(ctx, props_enum);
             }
-            for (uint32_t i = 0; i < prop_count; i++)
-                JS_FreeAtom(ctx, props_enum[i].atom);
-            js_free(ctx, props_enum);
         }
 
-        obj.set("description", "Object");
         std::string oid = store_object(group, props);
         obj.set("objectId", oid);
     } else {

@@ -126,7 +126,7 @@ json::Value CDPHandler::on_debugger_enable(const json::Value& /*params*/) {
         params.set("executionContextId", 1);
         params.set("hash", "");
         params.set("isLiveEdit", false);
-        params.set("sourceMapURL", "");
+        params.set("sourceMapURL", script.source_map_url);
         params.set("hasSourceURL", false);
         params.set("isModule", false);
         params.set("length", (int)script.source.size());
